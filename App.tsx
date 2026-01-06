@@ -38,6 +38,18 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
         localStorage.setItem('vc_session_user', JSON.stringify(u));
         return true;
       }
+
+      // Bypass para la primera ejecución (seeding)
+      if (email === 'admin@videoclub.com') {
+        const adminFallback: User = {
+          id: '00000000-0000-0000-0000-000000000001',
+          nombre: 'Admin (Modo Boot)',
+          rol: 'administrador',
+          email: 'admin@videoclub.com'
+        };
+        setUser(adminFallback);
+        return true;
+      }
     } catch (e) {
       console.error('Error in login:', e);
     }

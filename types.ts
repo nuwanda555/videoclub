@@ -1,7 +1,7 @@
 export type Role = 'administrador' | 'empleado';
 
 export interface User {
-  id: number;
+  id: string | number;
   nombre: string;
   email: string;
   rol: Role;
@@ -67,8 +67,8 @@ export interface Rental {
   fecha_devolucion_prevista: string; // ISO String
   fecha_devolucion_real?: string; // ISO String
   precio_dia: number;
-  empleado_alquiler_id: number;
-  empleado_devolucion_id?: number;
+  empleado_alquiler_id: string | number;
+  empleado_devolucion_id?: string | number;
   estado: RentalStatus;
 }
 
