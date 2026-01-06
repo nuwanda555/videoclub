@@ -1,225 +1,285 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { db } from '../services/db';
-import { Member, Copy, Movie, Category } from '../types';
-import { Search, ScanLine, ShoppingCart, Trash2, User, AlertCircle } from 'lucide-react';
-import { formatCurrency } from '../utils';
+import { Member, Movie, Copy } from '../types';
+import { Search, CreditCard, Disc, User, Loader2, CheckCircle, AlertTriangle } from 'lucide-react';
+import { formatCurrency, calculateReturnDate } from '../utils';
 import { useAuth } from '../App';
-import { useNavigate } from 'react-router-dom';
 
 export default function RentalFlow() {
   const { user } = useAuth();
-  const navigate = useNavigate();
-  const config = db.config.get();
-  
-  // State
-  const [memberSearch, setMemberSearch] = useState('');
-  const [selectedMember, setSelectedMember] = useState<Member | null>(null);
-  const [memberError, setMemberError] = useState('');
-  
-  const [barcodeInput, setBarcodeInput] = useState('');
-  const [cart, setCart] = useState<{copy: Copy, movie: Movie, category: Category}[]>([]);
-  const [barcodeError, setBarcodeError] = useState('');
+  const [config, setConfig] = useState<any>(null);
+  const [step, setStep] = useState(1);
+  const [loading, setLoading] = useState(true);
 
-  // 1. Find Member
-  const searchMember = () => {
-    const all = db.members.getAll();
-    const found = all.find(m => m.numero_socio === memberSearch || m.dni === memberSearch);
-    if (found) {
-      if (!found.activo) {
-        setMemberError('El socio está inactivo.');
-        setSelectedMember(null);
-        return;
-      }
-      // Check fines
-      const fines = db.fines.getPendingByMember(found.id);
-      if (fines.length > 0) {
-        setMemberError(`El socio tiene ${fines.length} multas pendientes. Debe pagarlas antes.`);
-        setSelectedMember(null);
-        return;
-      }
-      // Check max rentals
-      const activeRentals = db.rentals.getActiveByMember(found.id);
-      if (activeRentals.length >= config.max_alquileres_socio) {
-        setMemberError(`Límite de alquileres alcanzado (${activeRentals.length}/${config.max_alquileres_socio}).`);
-        setSelectedMember(null);
-        return;
-      }
-      setSelectedMember(found);
-      setMemberError('');
-    } else {
-      setMemberError('Socio no encontrado.');
-      setSelectedMember(null);
+  // Selection states
+  const [member, setMember] = useState<Member | null>(null);
+  const [movie, setMovie] = useState<Movie | null>(null);
+  const [copy, setCopy] = useState<Copy | null>(null);
+
+  // Search states
+  const [searchMember, setSearchMember] = useState('');
+  const [searchMovie, setSearchMovie] = useState('');
+
+  // DB results
+  const [members, setMembers] = useState<Member[]>([]);
+  const [movies, setMovies] = useState<Movie[]>([]);
+  const [availableCopies, setAvailableCopies] = useState<Copy[]>([]);
+  const [categories, setCategories] = useState<any[]>([]);
+  const [activeRentalsCount, setActiveRentalsCount] = useState(0);
+
+  useEffect(() => {
+    loadInitialData();
+  }, []);
+
+  const loadInitialData = async () => {
+    setLoading(true);
+    try {
+      const [allMembers, allMovies, cats, cfg] = await Promise.all([
+        db.members.getAll(),
+        db.movies.getAll(),
+        db.categories.getAll(),
+        db.config.get()
+      ]);
+      setMembers(allMembers);
+      setMovies(allMovies);
+      setCategories(cats);
+      setConfig(cfg);
+    } catch (e) {
+      console.error('Error loading rental data:', e);
+    } finally {
+      setLoading(false);
     }
   };
 
-  // 2. Add to Cart
-  const addToCart = (e: React.FormEvent) => {
-    e.preventDefault();
-    setBarcodeError('');
-    
-    // Check if already in cart
-    if (cart.find(i => i.copy.codigo_barras === barcodeInput)) {
-      setBarcodeError('Esta copia ya está en la lista.');
-      setBarcodeInput('');
-      return;
+  const handleSelectMember = async (m: Member) => {
+    setLoading(true);
+    try {
+      const active = await db.rentals.getActiveByMember(m.id);
+      setActiveRentalsCount(active.length);
+      setMember(m);
+      setStep(2);
+    } catch (e) {
+      console.error('Error selecting member:', e);
+    } finally {
+      setLoading(false);
     }
-
-    const copy = db.copies.getByBarcode(barcodeInput);
-    if (!copy) {
-      setBarcodeError('Copia no encontrada.');
-      return;
-    }
-    if (copy.estado !== 'disponible') {
-      setBarcodeError(`La copia no está disponible (Estado: ${copy.estado}).`);
-      return;
-    }
-
-    // Check limit taking into account current cart and active rentals
-    const currentActive = selectedMember ? db.rentals.getActiveByMember(selectedMember.id).length : 0;
-    if (currentActive + cart.length + 1 > config.max_alquileres_socio) {
-      setBarcodeError('Se superaría el límite de alquileres del socio.');
-      return;
-    }
-
-    const movie = db.movies.getAll().find(m => m.id === copy.pelicula_id)!;
-    const category = db.categories.getAll().find(c => c.id === movie.categoria_id)!;
-
-    setCart([...cart, { copy, movie, category }]);
-    setBarcodeInput('');
   };
 
-  // 3. Confirm
-  const handleConfirm = () => {
-    if (!selectedMember || !user) return;
-    
-    cart.forEach(item => {
-      const today = new Date();
-      const returnDate = new Date();
-      returnDate.setDate(today.getDate() + config.dias_alquiler_defecto);
-      
-      db.rentals.create({
-        socio_id: selectedMember.id,
-        copia_id: item.copy.id,
-        fecha_alquiler: today.toISOString(),
-        fecha_devolucion_prevista: returnDate.toISOString(),
-        precio_dia: item.category.precio_dia,
-        empleado_alquiler_id: user.id
+  const handleSelectMovie = async (m: Movie) => {
+    setLoading(true);
+    try {
+      const copies = await db.copies.getByMovieId(m.id);
+      setAvailableCopies(copies.filter(c => c.estado === 'disponible'));
+      setMovie(m);
+      setStep(3);
+    } catch (e) {
+      console.error('Error selecting movie:', e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const confirmRental = async () => {
+    if (!member || !copy || !movie || !user || !config) return;
+
+    setLoading(true);
+    try {
+      const category = categories.find(c => c.id === movie.categoria_id);
+      await db.rentals.create({
+        socio_id: member.id,
+        copia_id: copy.id,
+        fecha_alquiler: new Date().toISOString(),
+        fecha_devolucion_prevista: calculateReturnDate(config.dias_alquiler_defecto),
+        precio_dia: category?.precio_dia || 2.5,
+        empleado_alquiler_id: (user as any).id, // Assuming UUID from Supabase
       });
-    });
-
-    alert('Alquiler realizado correctamente.');
-    navigate('/dashboard');
+      setStep(4);
+    } catch (e) {
+      console.error('Error confirming rental:', e);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const totalAmount = cart.reduce((sum, item) => sum + (item.category.precio_dia * config.dias_alquiler_defecto), 0);
+  const reset = () => {
+    setStep(1);
+    setMember(null);
+    setMovie(null);
+    setCopy(null);
+    setSearchMember('');
+    setSearchMovie('');
+    loadInitialData();
+  };
+
+  const filteredMembers = members.filter(m =>
+    m.nombre.toLowerCase().includes(searchMember.toLowerCase()) ||
+    m.dni.toLowerCase().includes(searchMember.toLowerCase()) ||
+    m.numero_socio.toLowerCase().includes(searchMember.toLowerCase())
+  );
+
+  const filteredMovies = movies.filter(m =>
+    m.titulo.toLowerCase().includes(searchMovie.toLowerCase())
+  );
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
-      {/* Left Panel: Member Selection */}
-      <div className="lg:col-span-1 space-y-4">
-        <div className="bg-white p-6 rounded-lg shadow border border-slate-200">
-           <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><User /> 1. Seleccionar Socio</h2>
-           <div className="flex gap-2 mb-4">
-             <input 
-                className="flex-1 border p-2 rounded"
-                placeholder="Nº Socio o DNI"
-                value={memberSearch}
-                onChange={e => setMemberSearch(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && searchMember()}
-             />
-             <button onClick={searchMember} className="bg-blue-600 text-white p-2 rounded"><Search size={20}/></button>
-           </div>
-           
-           {memberError && <div className="p-3 bg-red-50 text-red-700 text-sm rounded flex items-center gap-2"><AlertCircle size={16}/>{memberError}</div>}
-
-           {selectedMember && (
-             <div className="mt-4 p-4 bg-blue-50 rounded border border-blue-100">
-               <p className="font-bold text-lg">{selectedMember.nombre} {selectedMember.apellidos}</p>
-               <p className="text-sm text-slate-600">Socio: {selectedMember.numero_socio}</p>
-               <p className="text-sm text-slate-600">DNI: {selectedMember.dni}</p>
-               <div className="mt-2 text-xs text-blue-800 font-medium">
-                  Alquileres Activos: {db.rentals.getActiveByMember(selectedMember.id).length} / {config.max_alquileres_socio}
-               </div>
-             </div>
-           )}
+    <div className="max-w-4xl mx-auto space-y-8">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-slate-900">Nuevo Alquiler</h1>
+        <div className="flex gap-2">
+          {[1, 2, 3].map(s => (
+            <div key={s} className={`w-8 h-8 rounded-full flex items-center justify-center font-bold ${step >= s ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
+              {s === 4 ? <CheckCircle size={20} /> : s}
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* Right Panel: Cart */}
-      <div className="lg:col-span-2 space-y-4">
-         <div className="bg-white p-6 rounded-lg shadow border border-slate-200 h-full flex flex-col">
-           <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><ShoppingCart /> 2. Añadir Películas</h2>
-           
-           <form onSubmit={addToCart} className="flex gap-2 mb-4">
-             <div className="relative flex-1">
-               <ScanLine className="absolute left-3 top-2.5 text-slate-400" size={20} />
-               <input 
-                  className="w-full pl-10 border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none"
-                  placeholder="Escanear código de barras..."
-                  value={barcodeInput}
-                  onChange={e => setBarcodeInput(e.target.value)}
-                  disabled={!selectedMember}
-                  autoFocus
-               />
-             </div>
-             <button type="submit" disabled={!selectedMember} className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50">Añadir</button>
-           </form>
-           {barcodeError && <div className="mb-4 text-red-600 text-sm">{barcodeError}</div>}
+      {/* Step 1: Select Member */}
+      {step === 1 && (
+        <div className="bg-white p-6 rounded-lg shadow border border-slate-200">
+          <h2 className="text-lg font-semibold mb-4 flex items-center gap-2"><User /> Seleccionar Socio</h2>
+          <div className="relative mb-6">
+            <Search className="absolute left-3 top-3 text-slate-400" />
+            <input
+              className="w-full pl-10 p-3 border rounded focus:ring-2 focus:ring-blue-500 outline-none"
+              placeholder="Buscar por nombre, DNI o nº socio..."
+              value={searchMember}
+              onChange={e => setSearchMember(e.target.value)}
+            />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {filteredMembers.map(m => (
+              <button
+                key={m.id}
+                onClick={() => handleSelectMember(m)}
+                className="flex flex-col p-4 border rounded-lg hover:border-blue-500 hover:bg-blue-50 text-left transition"
+              >
+                <span className="font-bold text-slate-900">{m.nombre} {m.apellidos}</span>
+                <span className="text-sm text-slate-500">{m.dni} • {m.numero_socio}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
-           <div className="flex-1 overflow-y-auto border rounded-lg mb-4">
-              <table className="w-full text-left">
-                <thead className="bg-slate-50 sticky top-0">
-                  <tr>
-                    <th className="p-3 text-sm font-semibold">Película</th>
-                    <th className="p-3 text-sm font-semibold">Formato</th>
-                    <th className="p-3 text-sm font-semibold">Precio/día</th>
-                    <th className="p-3 text-sm font-semibold">Total ({config.dias_alquiler_defecto} días)</th>
-                    <th className="p-3 text-sm font-semibold"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {cart.map((item, idx) => (
-                    <tr key={idx} className="border-b">
-                      <td className="p-3">
-                        <div className="font-medium">{item.movie.titulo}</div>
-                        <div className="text-xs text-slate-500">{item.copy.codigo_barras}</div>
-                      </td>
-                      <td className="p-3 text-sm">{item.copy.formato}</td>
-                      <td className="p-3 text-sm">{formatCurrency(item.category.precio_dia)}</td>
-                      <td className="p-3 text-sm font-bold">{formatCurrency(item.category.precio_dia * config.dias_alquiler_defecto)}</td>
-                      <td className="p-3">
-                        <button onClick={() => setCart(cart.filter((_, i) => i !== idx))} className="text-red-500 hover:bg-red-50 p-1 rounded">
-                          <Trash2 size={18} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {cart.length === 0 && (
-                    <tr><td colSpan={5} className="p-8 text-center text-slate-400">Escanea una copia para comenzar</td></tr>
-                  )}
-                </tbody>
-              </table>
-           </div>
+      {/* Step 2: Select Movie */}
+      {step === 2 && member && (
+        <div className="bg-white p-6 rounded-lg shadow border border-slate-200">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-lg font-semibold flex items-center gap-2"><Disc /> Seleccionar Película</h2>
+            <div className="text-sm bg-slate-100 px-3 py-1 rounded-full text-slate-700">
+              Socio: <strong>{member.nombre}</strong> ({activeRentalsCount}/{config?.max_alquileres_socio})
+            </div>
+          </div>
 
-           <div className="flex items-center justify-between border-t pt-4">
+          {activeRentalsCount >= (config?.max_alquileres_socio || 5) && (
+            <div className="mb-6 p-4 bg-red-50 text-red-800 rounded flex items-center gap-2">
+              <AlertTriangle /> El socio ha alcanzado el límite de alquileres permitidos.
+            </div>
+          )}
+
+          <div className="relative mb-6">
+            <Search className="absolute left-3 top-3 text-slate-400" />
+            <input
+              autoFocus
+              className="w-full pl-10 p-3 border rounded focus:ring-2 focus:ring-blue-500 outline-none"
+              placeholder="Buscar película por título..."
+              value={searchMovie}
+              onChange={e => setSearchMovie(e.target.value)}
+            />
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+            {filteredMovies.map(m => (
+              <button
+                key={m.id}
+                onClick={() => handleSelectMovie(m)}
+                className="flex flex-col p-2 border rounded-lg hover:border-blue-500 hover:bg-blue-50 transition items-center text-center"
+              >
+                <img src={m.portada_url || 'https://via.placeholder.com/150'} alt={m.titulo} className="w-full aspect-[2/3] object-cover rounded mb-2" />
+                <span className="font-bold text-xs text-slate-900 line-clamp-2">{m.titulo}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Step 3: Select Copy & Confirm */}
+      {step === 3 && movie && member && (
+        <div className="bg-white p-6 rounded-lg shadow border border-slate-200">
+          <h2 className="text-lg font-semibold mb-6 flex items-center gap-2"><CreditCard /> Confirmar Alquiler</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div className="space-y-4">
+              <div className="p-4 bg-slate-50 rounded-lg">
+                <p className="text-xs text-slate-500 uppercase font-bold mb-1">Película Seleccionada</p>
+                <p className="text-xl font-bold">{movie.titulo}</p>
+                <p className="text-sm text-slate-600">{movie.director} ({movie.año})</p>
+              </div>
               <div>
-                <p className="text-slate-500 text-sm">Total items: {cart.length}</p>
+                <p className="text-sm font-medium mb-2 text-slate-700">Seleccionar Copia Disponible</p>
+                <div className="space-y-2">
+                  {availableCopies.length === 0 ? (
+                    <p className="text-red-500 text-sm font-medium">No hay copias disponibles para esta película.</p>
+                  ) : (
+                    availableCopies.map(c => (
+                      <button
+                        key={c.id}
+                        onClick={() => setCopy(c)}
+                        className={`w-full p-3 border rounded-lg flex justify-between items-center transition ${copy?.id === c.id ? 'border-blue-600 bg-blue-50 ring-2 ring-blue-100' : 'hover:bg-slate-50'}`}
+                      >
+                        <span className="font-mono">{c.codigo_barras}</span>
+                        <span className="text-xs bg-slate-200 px-2 py-1 rounded">{c.formato}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
               </div>
-              <div className="text-right">
-                <p className="text-sm text-slate-500">Total a pagar</p>
-                <p className="text-3xl font-bold text-blue-900">{formatCurrency(totalAmount)}</p>
-              </div>
-           </div>
+            </div>
 
-           <button 
-             onClick={handleConfirm} 
-             disabled={cart.length === 0 || !selectedMember}
-             className="w-full mt-4 bg-blue-600 text-white py-3 rounded-lg text-lg font-bold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-           >
-             Confirmar Alquiler
-           </button>
-         </div>
-      </div>
+            <div className="border-l pl-8 space-y-6">
+              <div>
+                <h3 className="font-bold mb-3">Resumen</h3>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between"><span>Precio/día:</span><strong>{formatCurrency(categories.find(ca => ca.id === movie.categoria_id)?.precio_dia || 0)}</strong></div>
+                  <div className="flex justify-between"><span>Días incluidos:</span><strong>{config?.dias_alquiler_defecto}</strong></div>
+                  <div className="flex justify-between border-t pt-2 mt-2 text-lg font-bold">
+                    <span>Total:</span>
+                    <span>{formatCurrency((categories.find(ca => ca.id === movie.categoria_id)?.precio_dia || 0) * (config?.dias_alquiler_defecto || 1))}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <button
+                  onClick={confirmRental}
+                  disabled={!copy || loading}
+                  className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {loading && <Loader2 className="animate-spin" size={20} />}
+                  Completar Alquiler
+                </button>
+                <button onClick={() => setStep(2)} className="w-full text-slate-500 hover:text-slate-800 text-sm font-medium">Volver</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Step 4: Success */}
+      {step === 4 && (
+        <div className="bg-white p-12 rounded-lg shadow border border-slate-200 text-center animate-in fade-in zoom-in duration-300">
+          <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6">
+            <CheckCircle size={48} />
+          </div>
+          <h2 className="text-3xl font-bold text-slate-900 mb-2">¡Alquiler Completado!</h2>
+          <p className="text-slate-500 mb-8 max-w-sm mx-auto">La película ha sido registrada bajo el socio <strong>{member?.nombre}</strong>. Recuerda marcar la fecha de devolución prevista.</p>
+          <button
+            onClick={reset}
+            className="bg-slate-900 text-white px-8 py-3 rounded-lg font-bold hover:bg-slate-800 transition"
+          >
+            Hacer otro Alquiler
+          </button>
+        </div>
+      )}
     </div>
   );
 }
