@@ -1,0 +1,5 @@
+{
+  "name": "VideoClub Manager",
+  "description": "Sistema de gestión integral para videoclub físico con control de alquileres, socios, catálogo y multas.",
+  "requestFramePermissions": []
+}
