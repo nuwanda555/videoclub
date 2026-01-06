@@ -125,6 +125,10 @@ export const db = {
     update: async (member: Member) => {
       const { error } = await supabase.from('members').update(member).eq('id', member.id);
       if (error) throw error;
+    },
+    delete: async (id: number) => {
+      const { error } = await supabase.from('members').delete().eq('id', id);
+      if (error) throw error;
     }
   },
   rentals: {
