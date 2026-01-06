@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../services/db';
 import { Member } from '../types';
-import { Plus, Search, UserCheck, UserX, AlertCircle } from 'lucide-react';
+import { Plus, Search, UserCheck, UserX, AlertCircle, Loader2 } from 'lucide-react';
 import { formatDate } from '../utils';
 
 export default function Members() {
@@ -9,50 +9,90 @@ export default function Members() {
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingMember, setEditingMember] = useState<Partial<Member>>({ activo: true });
+  const [loading, setLoading] = useState(true);
+  const [activeRentalsMap, setActiveRentalsMap] = useState<Record<number, number>>({});
+  const [pendingFinesMap, setPendingFinesMap] = useState<Record<number, number>>({});
 
   useEffect(() => {
-    setMembers(db.members.getAll());
+    refreshData();
   }, []);
 
-  const filteredMembers = members.filter(m => 
-    m.nombre.toLowerCase().includes(search.toLowerCase()) || 
+  const refreshData = async () => {
+    setLoading(true);
+    try {
+      const allMembers = await db.members.getAll();
+      setMembers(allMembers);
+
+      // Load extra info per member (simplified)
+      const rentalsMap: Record<number, number> = {};
+      const finesMap: Record<number, number> = {};
+
+      await Promise.all(allMembers.map(async (m) => {
+        const [rentals, fines] = await Promise.all([
+          db.rentals.getActiveByMember(m.id),
+          db.fines.getPendingByMember(m.id)
+        ]);
+        rentalsMap[m.id] = rentals.length;
+        finesMap[m.id] = fines.length;
+      }));
+
+      setActiveRentalsMap(rentalsMap);
+      setPendingFinesMap(finesMap);
+    } catch (e) {
+      console.error('Error loading members:', e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const filteredMembers = members.filter(m =>
+    m.nombre.toLowerCase().includes(search.toLowerCase()) ||
     m.apellidos.toLowerCase().includes(search.toLowerCase()) ||
     m.dni.toLowerCase().includes(search.toLowerCase()) ||
     m.numero_socio.toLowerCase().includes(search.toLowerCase())
   );
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (editingMember.id) {
-      db.members.update(editingMember as Member);
-    } else {
-      const numSocio = `S${(members.length + 1).toString().padStart(3, '0')}`;
-      db.members.add({
-        ...editingMember,
-        numero_socio: numSocio,
-        fecha_alta: new Date().toISOString()
-      } as Omit<Member, 'id'>);
+    setLoading(true);
+    try {
+      if (editingMember.id) {
+        await db.members.update(editingMember as Member);
+      } else {
+        const numSocio = `S${(members.length + 1).toString().padStart(3, '0')}`;
+        await db.members.add({
+          ...editingMember,
+          numero_socio: numSocio,
+          fecha_alta: new Date().toISOString()
+        } as Omit<Member, 'id'>);
+      }
+      await refreshData();
+      setIsModalOpen(false);
+      setEditingMember({ activo: true });
+    } catch (e) {
+      console.error('Error saving member:', e);
+    } finally {
+      setLoading(false);
     }
-    setMembers(db.members.getAll());
-    setIsModalOpen(false);
-    setEditingMember({ activo: true });
   };
 
-  const getActiveRentalsCount = (memberId: number) => {
-    return db.rentals.getActiveByMember(memberId).length;
-  };
-
-  const getUnpaidFinesCount = (memberId: number) => {
-    return db.fines.getPendingByMember(memberId).length;
-  };
+  if (loading && members.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center p-12 text-slate-500">
+        <Loader2 className="animate-spin mb-2" size={40} />
+        <p>Cargando socios...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold text-slate-900">Socios</h1>
-        <button 
+        <button
           onClick={() => { setEditingMember({ activo: true }); setIsModalOpen(true); }}
-          className="bg-blue-600 text-white px-4 py-2 rounded flex items-center gap-2 hover:bg-blue-700"
+          className="bg-blue-600 text-white px-4 py-2 rounded flex items-center gap-2 hover:bg-blue-700 disabled:opacity-50"
+          disabled={loading}
         >
           <Plus size={18} /> Nuevo Socio
         </button>
@@ -85,26 +125,27 @@ export default function Members() {
             </thead>
             <tbody>
               {filteredMembers.map(member => {
-                const fines = getUnpaidFinesCount(member.id);
+                const fines = pendingFinesMap[member.id] || 0;
+                const actives = activeRentalsMap[member.id] || 0;
                 return (
                   <tr key={member.id} className="border-b border-slate-100 hover:bg-slate-50">
                     <td className="p-3 font-mono text-sm">{member.numero_socio}</td>
                     <td className="p-3 font-medium">{member.nombre} {member.apellidos}</td>
                     <td className="p-3">{member.dni}</td>
                     <td className="p-3">
-                      {member.activo 
-                        ? <span className="text-green-600 text-xs bg-green-100 px-2 py-1 rounded-full flex w-fit items-center gap-1"><UserCheck size={12}/> Activo</span>
-                        : <span className="text-slate-500 text-xs bg-slate-100 px-2 py-1 rounded-full flex w-fit items-center gap-1"><UserX size={12}/> Inactivo</span>
+                      {member.activo
+                        ? <span className="text-green-600 text-xs bg-green-100 px-2 py-1 rounded-full flex w-fit items-center gap-1"><UserCheck size={12} /> Activo</span>
+                        : <span className="text-slate-500 text-xs bg-slate-100 px-2 py-1 rounded-full flex w-fit items-center gap-1"><UserX size={12} /> Inactivo</span>
                       }
                     </td>
-                    <td className="p-3 text-center">{getActiveRentalsCount(member.id)}</td>
+                    <td className="p-3 text-center">{actives}</td>
                     <td className="p-3 text-center">
-                       {fines > 0 ? (
-                         <span className="text-red-600 font-bold flex items-center justify-center gap-1"><AlertCircle size={14}/> {fines}</span>
-                       ) : <span className="text-slate-400">-</span>}
+                      {fines > 0 ? (
+                        <span className="text-red-600 font-bold flex items-center justify-center gap-1"><AlertCircle size={14} /> {fines}</span>
+                      ) : <span className="text-slate-400">-</span>}
                     </td>
                     <td className="p-3">
-                      <button 
+                      <button
                         onClick={() => { setEditingMember(member); setIsModalOpen(true); }}
                         className="text-blue-600 hover:text-blue-800 text-sm font-medium"
                       >
@@ -116,52 +157,56 @@ export default function Members() {
               })}
             </tbody>
           </table>
+          {loading && <div className="p-4 text-center"><Loader2 className="animate-spin inline text-blue-600" /></div>}
         </div>
       </div>
 
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-           <div className="bg-white rounded-lg shadow-xl w-full max-w-lg p-6">
-              <h2 className="text-xl font-bold mb-4">{editingMember.id ? 'Editar Socio' : 'Nuevo Socio'}</h2>
-              <form onSubmit={handleSave} className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                   <div>
-                     <label className="block text-sm font-medium mb-1">Nombre</label>
-                     <input required className="w-full border p-2 rounded" value={editingMember.nombre || ''} onChange={e => setEditingMember({...editingMember, nombre: e.target.value})} />
-                   </div>
-                   <div>
-                     <label className="block text-sm font-medium mb-1">Apellidos</label>
-                     <input required className="w-full border p-2 rounded" value={editingMember.apellidos || ''} onChange={e => setEditingMember({...editingMember, apellidos: e.target.value})} />
-                   </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                   <div>
-                     <label className="block text-sm font-medium mb-1">DNI</label>
-                     <input required className="w-full border p-2 rounded" value={editingMember.dni || ''} onChange={e => setEditingMember({...editingMember, dni: e.target.value})} />
-                   </div>
-                   <div>
-                     <label className="block text-sm font-medium mb-1">Teléfono</label>
-                     <input className="w-full border p-2 rounded" value={editingMember.telefono || ''} onChange={e => setEditingMember({...editingMember, telefono: e.target.value})} />
-                   </div>
+          <div className="bg-white rounded-lg shadow-xl w-full max-lg p-6">
+            <h2 className="text-xl font-bold mb-4">{editingMember.id ? 'Editar Socio' : 'Nuevo Socio'}</h2>
+            <form onSubmit={handleSave} className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Nombre</label>
+                  <input required className="w-full border p-2 rounded" value={editingMember.nombre || ''} onChange={e => setEditingMember({ ...editingMember, nombre: e.target.value })} />
                 </div>
                 <div>
-                     <label className="block text-sm font-medium mb-1">Email</label>
-                     <input type="email" className="w-full border p-2 rounded" value={editingMember.email || ''} onChange={e => setEditingMember({...editingMember, email: e.target.value})} />
+                  <label className="block text-sm font-medium mb-1">Apellidos</label>
+                  <input required className="w-full border p-2 rounded" value={editingMember.apellidos || ''} onChange={e => setEditingMember({ ...editingMember, apellidos: e.target.value })} />
                 </div>
-                
-                {editingMember.id && (
-                  <div className="flex items-center gap-2 mt-2">
-                     <input type="checkbox" id="active" checked={editingMember.activo} onChange={e => setEditingMember({...editingMember, activo: e.target.checked})} />
-                     <label htmlFor="active" className="text-sm">Socio Activo</label>
-                  </div>
-                )}
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">DNI</label>
+                  <input required className="w-full border p-2 rounded" value={editingMember.dni || ''} onChange={e => setEditingMember({ ...editingMember, dni: e.target.value })} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Teléfono</label>
+                  <input className="w-full border p-2 rounded" value={editingMember.telefono || ''} onChange={e => setEditingMember({ ...editingMember, telefono: e.target.value })} />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Email</label>
+                <input type="email" className="w-full border p-2 rounded" value={editingMember.email || ''} onChange={e => setEditingMember({ ...editingMember, email: e.target.value })} />
+              </div>
 
-                <div className="flex justify-end gap-3 mt-6">
-                  <button type="button" onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded">Cancelar</button>
-                  <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Guardar</button>
+              {editingMember.id && (
+                <div className="flex items-center gap-2 mt-2">
+                  <input type="checkbox" id="active" checked={editingMember.activo} onChange={e => setEditingMember({ ...editingMember, activo: e.target.checked })} />
+                  <label htmlFor="active" className="text-sm">Socio Activo</label>
                 </div>
-              </form>
-           </div>
+              )}
+
+              <div className="flex justify-end gap-3 mt-6">
+                <button type="button" onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded">Cancelar</button>
+                <button type="submit" disabled={loading} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2">
+                  {loading && <Loader2 className="animate-spin" size={16} />}
+                  Guardar
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

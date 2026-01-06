@@ -14,7 +14,7 @@ import Reports from './components/Reports';
 // Auth Context
 interface AuthContextType {
   user: User | null;
-  login: (email: string) => boolean;
+  login: (email: string) => Promise<boolean>;
   logout: () => void;
 }
 
@@ -30,12 +30,16 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     setLoading(false);
   }, []);
 
-  const login = (email: string) => {
-    const u = db.users.getByEmail(email);
-    if (u) {
-      setUser(u);
-      localStorage.setItem('vc_session_user', JSON.stringify(u));
-      return true;
+  const login = async (email: string) => {
+    try {
+      const u = await db.users.getByEmail(email);
+      if (u) {
+        setUser(u);
+        localStorage.setItem('vc_session_user', JSON.stringify(u));
+        return true;
+      }
+    } catch (e) {
+      console.error('Error in login:', e);
     }
     return false;
   };
@@ -45,7 +49,14 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     localStorage.removeItem('vc_session_user');
   };
 
-  if (loading) return <div>Cargando...</div>;
+  if (loading) return (
+    <div className="min-h-screen bg-slate-100 flex items-center justify-center">
+      <div className="flex flex-col items-center gap-4">
+        <Film className="w-12 h-12 text-blue-600 animate-pulse" />
+        <p className="text-slate-600 font-medium">Cargando sistema...</p>
+      </div>
+    </div>
+  );
 
   return (
     <AuthContext.Provider value={{ user, login, logout }}>
@@ -88,9 +99,8 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             <Link
               key={item.path}
               to={item.path}
-              className={`flex items-center gap-3 px-3 py-2 rounded-md transition-colors ${
-                location.pathname === item.path ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 text-slate-400'
-              }`}
+              className={`flex items-center gap-3 px-3 py-2 rounded-md transition-colors ${location.pathname === item.path ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 text-slate-400'
+                }`}
             >
               <item.icon size={20} />
               {item.label}
@@ -119,35 +129,34 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       {/* Mobile Header */}
       <div className="flex-1 flex flex-col h-screen overflow-hidden">
         <header className="md:hidden bg-white border-b border-slate-200 p-4 flex justify-between items-center z-10">
-           <div className="flex items-center gap-2 font-bold text-slate-900">
-             <Film className="text-blue-500" /> VideoClub
-           </div>
-           <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)}>
-             {mobileMenuOpen ? <X /> : <Menu />}
-           </button>
+          <div className="flex items-center gap-2 font-bold text-slate-900">
+            <Film className="text-blue-500" /> VideoClub
+          </div>
+          <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)}>
+            {mobileMenuOpen ? <X /> : <Menu />}
+          </button>
         </header>
 
         {/* Mobile Menu Overlay */}
         {mobileMenuOpen && (
           <div className="md:hidden absolute top-16 left-0 w-full bg-slate-900 text-slate-100 z-50 p-4 shadow-xl">
-             <nav className="space-y-2">
-               {navItems.map((item) => (
-                 <Link
-                   key={item.path}
-                   to={item.path}
-                   onClick={() => setMobileMenuOpen(false)}
-                   className={`flex items-center gap-3 px-3 py-3 rounded-md ${
-                     location.pathname === item.path ? 'bg-blue-600' : 'hover:bg-slate-800'
-                   }`}
-                 >
-                   <item.icon size={20} />
-                   {item.label}
-                 </Link>
-               ))}
-               <button onClick={logout} className="flex items-center gap-3 px-3 py-3 text-red-400 w-full text-left">
-                  <LogOut size={20} /> Salir
-               </button>
-             </nav>
+            <nav className="space-y-2">
+              {navItems.map((item) => (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={`flex items-center gap-3 px-3 py-3 rounded-md ${location.pathname === item.path ? 'bg-blue-600' : 'hover:bg-slate-800'
+                    }`}
+                >
+                  <item.icon size={20} />
+                  {item.label}
+                </Link>
+              ))}
+              <button onClick={logout} className="flex items-center gap-3 px-3 py-3 text-red-400 w-full text-left">
+                <LogOut size={20} /> Salir
+              </button>
+            </nav>
           </div>
         )}
 
@@ -165,13 +174,18 @@ const LoginScreen = () => {
   const { login, user } = useAuth();
   const [email, setEmail] = useState('admin@videoclub.com'); // Pre-filled for demo
   const [error, setError] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   if (user) return <Navigate to="/dashboard" replace />;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!login(email)) {
-      setError('Usuario no encontrado. Prueba: admin@videoclub.com');
+    setIsLoggingIn(true);
+    setError('');
+    const success = await login(email);
+    if (!success) {
+      setError('Usuario no encontrado. Asegúrate de cargar los datos de prueba en Configuración (o contacta al administrador).');
+      setIsLoggingIn(false);
     }
   };
 
@@ -181,7 +195,7 @@ const LoginScreen = () => {
         <div className="text-center mb-8">
           <Film className="w-12 h-12 text-blue-600 mx-auto mb-2" />
           <h1 className="text-2xl font-bold text-slate-900">VideoClub Manager</h1>
-          <p className="text-slate-500">Inicia sesión para acceder</p>
+          <p className="text-slate-500">Inicia sesión para acceder (Supabase)</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
@@ -195,12 +209,17 @@ const LoginScreen = () => {
             />
           </div>
           <div className="text-sm text-slate-500 mb-4 bg-slate-50 p-2 rounded">
-             <p>Demo Admin: <strong>admin@videoclub.com</strong></p>
-             <p>Demo Empleado: <strong>emp@videoclub.com</strong></p>
+            <p>Demo Admin: <strong>admin@videoclub.com</strong></p>
+            <p>Demo Empleado: <strong>emp@videoclub.com</strong></p>
+            <p className="text-xs text-blue-600 mt-1 italic">* Requiere carga previa de datos.</p>
           </div>
           {error && <div className="text-red-500 text-sm bg-red-50 p-2 rounded flex items-center gap-2"><AlertTriangle size={16} />{error}</div>}
-          <button type="submit" className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition">
-            Entrar
+          <button
+            type="submit"
+            disabled={isLoggingIn}
+            className={`w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition flex items-center justify-center ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            {isLoggingIn ? 'Entrando...' : 'Entrar'}
           </button>
         </form>
       </div>

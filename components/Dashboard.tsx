@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { db } from '../services/db';
-import { Rental, Copy } from '../types';
 import { formatCurrency, calculateDaysLate } from '../utils';
-import { AlertCircle, TrendingUp, Users, Film, AlertTriangle } from 'lucide-react';
+import { AlertCircle, TrendingUp, Users, Film, AlertTriangle, Loader2 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 
 export default function Dashboard() {
@@ -15,67 +14,94 @@ export default function Dashboard() {
   });
   const [overdueList, setOverdueList] = useState<any[]>([]);
   const [chartData, setChartData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Calculate Stats
-    const rentals = db.rentals.getAll();
-    const members = db.members.getAll();
-    const movies = db.movies.getAll();
-    const fines = db.fines.getAll();
+    refreshData();
+  }, []);
 
-    const today = new Date().toISOString().split('T')[0];
-    
-    // Check Overdue
-    const active = rentals.filter(r => r.estado === 'activo');
-    const overdue = active.filter(r => new Date(r.fecha_devolucion_prevista) < new Date());
-    
-    // Income Today (Rentals made today + Fines paid today)
-    const rentalsToday = rentals.filter(r => r.fecha_alquiler.startsWith(today));
-    const finesPaidToday = fines.filter(f => f.pagada && f.fecha_pago?.startsWith(today));
-    
-    const incomeRentals = rentalsToday.reduce((sum, r) => sum + (r.precio_dia * db.config.get().dias_alquiler_defecto), 0);
-    const incomeFines = finesPaidToday.reduce((sum, f) => sum + f.importe, 0);
+  const refreshData = async () => {
+    setLoading(true);
+    try {
+      // Parallelize fetching
+      const [rentals, members, movies, fines, config] = await Promise.all([
+        db.rentals.getAll(),
+        db.members.getAll(),
+        db.movies.getAll(),
+        db.fines.getAll(),
+        db.config.get()
+      ]);
+      const allCopies = await db.copies.getAll();
 
-    setStats({
-      activeRentals: active.length,
-      overdueRentals: overdue.length,
-      todayIncome: incomeRentals + incomeFines,
-      totalMembers: members.length,
-      totalMovies: movies.length
-    });
+      const today = new Date().toISOString().split('T')[0];
 
-    // Overdue List Details
-    const detailedOverdue = overdue.map(r => {
-      const member = members.find(m => m.id === r.socio_id);
-      const copy = db.copies.getAll().find(c => c.id === r.copia_id);
-      const movie = movies.find(m => m.id === copy?.pelicula_id);
-      return {
-        id: r.id,
-        memberName: `${member?.nombre} ${member?.apellidos}`,
-        movieTitle: movie?.titulo,
-        dueDate: r.fecha_devolucion_prevista,
-        daysLate: calculateDaysLate(r.fecha_devolucion_prevista)
-      };
-    });
-    setOverdueList(detailedOverdue);
+      // Check Overdue
+      const active = rentals.filter(r => r.estado === 'activo');
+      const overdue = active.filter(r => new Date(r.fecha_devolucion_prevista) < new Date());
 
-    // Mock Chart Data (Last 7 days)
-    const data = [];
-    for (let i = 6; i >= 0; i--) {
+      // Income Today (Rentals made today + Fines paid today)
+      const rentalsToday = rentals.filter(r => r.fecha_alquiler.startsWith(today));
+      const finesPaidToday = fines.filter(f => f.pagada && f.fecha_pago?.startsWith(today));
+
+      const incomeRentals = rentalsToday.reduce((sum, r) => sum + (r.precio_dia * config.dias_alquiler_defecto), 0);
+      const incomeFines = finesPaidToday.reduce((sum, f) => sum + (f.importe || 0), 0);
+
+      setStats({
+        activeRentals: active.length,
+        overdueRentals: overdue.length,
+        todayIncome: incomeRentals + incomeFines,
+        totalMembers: members.length,
+        totalMovies: movies.length
+      });
+
+      // Overdue List Details
+      const detailedOverdue = overdue.map(r => {
+        const member = members.find(m => m.id === r.socio_id);
+        const copy = allCopies.find(c => c.id === r.copia_id);
+        const movie = movies.find(m => m.id === copy?.pelicula_id);
+        return {
+          id: r.id,
+          memberName: member ? `${member.nombre} ${member.apellidos}` : 'Desconocido',
+          movieTitle: movie?.titulo || 'Desconocida',
+          dueDate: r.fecha_devolucion_prevista,
+          daysLate: calculateDaysLate(r.fecha_devolucion_prevista)
+        };
+      });
+      setOverdueList(detailedOverdue);
+
+      // Mock Activity Data (Last 7 days)
+      const data = [];
+      for (let i = 6; i >= 0; i--) {
         const d = new Date();
         d.setDate(d.getDate() - i);
         const dateStr = d.toISOString().split('T')[0];
         const dayRentals = rentals.filter(r => r.fecha_alquiler.startsWith(dateStr)).length;
         data.push({ name: d.toLocaleDateString('es-ES', { weekday: 'short' }), alquileres: dayRentals });
+      }
+      setChartData(data);
+    } catch (e) {
+      console.error('Error refreshing dashboard:', e);
+    } finally {
+      setLoading(false);
     }
-    setChartData(data);
+  };
 
-  }, []);
+  if (loading && stats.totalMovies === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center p-12 text-slate-500">
+        <Loader2 className="animate-spin mb-2" size={40} />
+        <p>Calculando métricas...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
-      
+      <div className="flex justify-between items-center">
+        <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
+        {loading && <Loader2 className="animate-spin text-blue-600" size={20} />}
+      </div>
+
       {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="bg-white p-4 rounded-lg shadow border border-slate-200">
@@ -119,18 +145,18 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Chart */}
         <div className="bg-white p-6 rounded-lg shadow border border-slate-200 col-span-2">
-           <h2 className="text-lg font-semibold mb-4">Actividad Semanal</h2>
-           <div className="h-64 w-full">
-             <ResponsiveContainer width="100%" height="100%">
-               <BarChart data={chartData}>
-                 <CartesianGrid strokeDasharray="3 3" />
-                 <XAxis dataKey="name" />
-                 <YAxis />
-                 <Tooltip />
-                 <Bar dataKey="alquileres" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-               </BarChart>
-             </ResponsiveContainer>
-           </div>
+          <h2 className="text-lg font-semibold mb-4">Actividad Semanal</h2>
+          <div className="h-64 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="name" />
+                <YAxis />
+                <Tooltip />
+                <Bar dataKey="alquileres" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </div>
 
         {/* Alerts List */}

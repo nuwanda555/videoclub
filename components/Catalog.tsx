@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../services/db';
 import { Movie, Category, Genre, Copy } from '../types';
-import { Plus, Search, Edit2, Archive, Disc } from 'lucide-react';
+import { Plus, Search, Edit2, Disc, Loader2 } from 'lucide-react';
 import { formatCurrency } from '../utils';
 
 export default function Catalog() {
@@ -9,7 +9,8 @@ export default function Catalog() {
   const [copies, setCopies] = useState<Copy[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [search, setSearch] = useState('');
-  
+  const [loading, setLoading] = useState(true);
+
   // Modal states
   const [isMovieOpen, setIsMovieOpen] = useState(false);
   const [editingMovie, setEditingMovie] = useState<Partial<Movie> | null>(null);
@@ -21,45 +22,71 @@ export default function Catalog() {
     refreshData();
   }, []);
 
-  const refreshData = () => {
-    setMovies(db.movies.getAll());
-    setCopies(db.copies.getAll());
-    setCategories(db.categories.getAll());
+  const refreshData = async () => {
+    setLoading(true);
+    try {
+      const [m, c, cat] = await Promise.all([
+        db.movies.getAll(),
+        db.copies.getAll(),
+        db.categories.getAll()
+      ]);
+      setMovies(m);
+      setCopies(c);
+      setCategories(cat);
+    } catch (e) {
+      console.error('Error refreshing catalog:', e);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const filteredMovies = movies.filter(m => 
-    m.titulo.toLowerCase().includes(search.toLowerCase()) || 
+  const filteredMovies = movies.filter(m =>
+    m.titulo.toLowerCase().includes(search.toLowerCase()) ||
     m.director?.toLowerCase().includes(search.toLowerCase())
   );
 
-  const handleSaveMovie = (e: React.FormEvent) => {
+  const handleSaveMovie = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingMovie?.titulo || !editingMovie.categoria_id) return;
-    
-    if (editingMovie.id) {
-      db.movies.update(editingMovie as Movie);
-    } else {
-      db.movies.add({
-        ...editingMovie,
-        generos_ids: editingMovie.generos_ids || []
-      } as Omit<Movie, 'id'>);
+
+    setLoading(true);
+    try {
+      if (editingMovie.id) {
+        await db.movies.update(editingMovie as Movie);
+      } else {
+        await db.movies.add({
+          ...editingMovie,
+          generos_ids: editingMovie.generos_ids || []
+        } as Omit<Movie, 'id'>);
+      }
+      setIsMovieOpen(false);
+      setEditingMovie(null);
+      await refreshData();
+    } catch (e) {
+      console.error('Error saving movie:', e);
+    } finally {
+      setLoading(false);
     }
-    setIsMovieOpen(false);
-    setEditingMovie(null);
-    refreshData();
   };
 
-  const handleAddCopy = (e: React.FormEvent) => {
+  const handleAddCopy = async (e: React.FormEvent) => {
     e.preventDefault();
     if (selectedMovieId && newCopy.codigo_barras) {
-      db.copies.add({
-        ...newCopy,
-        pelicula_id: selectedMovieId,
-        estado: 'disponible'
-      } as Omit<Copy, 'id'>);
-      setIsCopyOpen(false);
-      setNewCopy({ formato: 'DVD', estado: 'disponible', codigo_barras: '' });
-      refreshData();
+      setLoading(true);
+      try {
+        await db.copies.add({
+          ...newCopy,
+          pelicula_id: selectedMovieId,
+          estado: 'disponible'
+        } as Omit<Copy, 'id'>);
+        setIsCopyOpen(false);
+        setNewCopy({ formato: 'DVD', estado: 'disponible', codigo_barras: '' });
+        await refreshData();
+      } catch (e) {
+        console.error('Error adding copy:', e);
+      } finally {
+        setLoading(false);
+      }
     }
   };
 
@@ -75,13 +102,23 @@ export default function Catalog() {
     return { total: movieCopies.length, available };
   };
 
+  if (loading && movies.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center p-12">
+        <Loader2 className="animate-spin text-blue-600 mb-2" size={40} />
+        <p className="text-slate-500">Cargando catálogo...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <h1 className="text-2xl font-bold text-slate-900">Catálogo de Películas</h1>
-        <button 
-          onClick={() => { setEditingMovie({ categoria_id: 1, generos_ids: [] }); setIsMovieOpen(true); }}
-          className="bg-blue-600 text-white px-4 py-2 rounded flex items-center gap-2 hover:bg-blue-700"
+        <button
+          onClick={() => { setEditingMovie({ categoria_id: categories[0]?.id || 1, generos_ids: [] }); setIsMovieOpen(true); }}
+          className="bg-blue-600 text-white px-4 py-2 rounded flex items-center gap-2 hover:bg-blue-700 disabled:opacity-50"
+          disabled={loading}
         >
           <Plus size={18} /> Nueva Película
         </button>
@@ -124,10 +161,10 @@ export default function Catalog() {
                       <div className="text-xs mt-1 text-slate-500">{formatCurrency(cat?.precio_dia || 0)}/día</div>
                     </td>
                     <td className="p-3">
-                       <span className={`font-bold ${stock.available > 0 ? 'text-green-600' : 'text-red-500'}`}>
-                         {stock.available}
-                       </span>
-                       <span className="text-slate-400"> / {stock.total}</span>
+                      <span className={`font-bold ${stock.available > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                        {stock.available}
+                      </span>
+                      <span className="text-slate-400"> / {stock.total}</span>
                     </td>
                     <td className="p-3 flex gap-2">
                       <button onClick={() => { setEditingMovie(movie); setIsMovieOpen(true); }} className="text-blue-600 hover:bg-blue-50 p-1 rounded" title="Editar">
@@ -142,7 +179,8 @@ export default function Catalog() {
               })}
             </tbody>
           </table>
-          {filteredMovies.length === 0 && <p className="text-center p-4 text-slate-500">No se encontraron películas.</p>}
+          {filteredMovies.length === 0 && !loading && <p className="text-center p-4 text-slate-500">No se encontraron películas.</p>}
+          {loading && movies.length > 0 && <div className="text-center p-4"><Loader2 className="animate-spin mx-auto text-blue-600" /></div>}
         </div>
       </div>
 
@@ -154,32 +192,35 @@ export default function Catalog() {
               <h2 className="text-xl font-bold mb-4">{editingMovie?.id ? 'Editar Película' : 'Nueva Película'}</h2>
               <form onSubmit={handleSaveMovie} className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                   <div>
-                      <label className="block text-sm font-medium mb-1">Título</label>
-                      <input required className="w-full border p-2 rounded" value={editingMovie?.titulo || ''} onChange={e => setEditingMovie({...editingMovie, titulo: e.target.value})} />
-                   </div>
-                   <div>
-                      <label className="block text-sm font-medium mb-1">Director</label>
-                      <input className="w-full border p-2 rounded" value={editingMovie?.director || ''} onChange={e => setEditingMovie({...editingMovie, director: e.target.value})} />
-                   </div>
-                   <div>
-                      <label className="block text-sm font-medium mb-1">Año</label>
-                      <input type="number" className="w-full border p-2 rounded" value={editingMovie?.año || ''} onChange={e => setEditingMovie({...editingMovie, año: parseInt(e.target.value)})} />
-                   </div>
-                   <div>
-                      <label className="block text-sm font-medium mb-1">Categoría</label>
-                      <select className="w-full border p-2 rounded" value={editingMovie?.categoria_id} onChange={e => setEditingMovie({...editingMovie, categoria_id: parseInt(e.target.value)})}>
-                        {categories.map(c => <option key={c.id} value={c.id}>{c.nombre} - {formatCurrency(c.precio_dia)}</option>)}
-                      </select>
-                   </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Título</label>
+                    <input required className="w-full border p-2 rounded" value={editingMovie?.titulo || ''} onChange={e => setEditingMovie({ ...editingMovie, titulo: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Director</label>
+                    <input className="w-full border p-2 rounded" value={editingMovie?.director || ''} onChange={e => setEditingMovie({ ...editingMovie, director: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Año</label>
+                    <input type="number" className="w-full border p-2 rounded" value={editingMovie?.año || ''} onChange={e => setEditingMovie({ ...editingMovie, año: parseInt(e.target.value) })} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Categoría</label>
+                    <select className="w-full border p-2 rounded" value={editingMovie?.categoria_id} onChange={e => setEditingMovie({ ...editingMovie, categoria_id: parseInt(e.target.value) })}>
+                      {categories.map(c => <option key={c.id} value={c.id}>{c.nombre} - {formatCurrency(c.precio_dia)}</option>)}
+                    </select>
+                  </div>
                 </div>
                 <div>
-                   <label className="block text-sm font-medium mb-1">Sinopsis</label>
-                   <textarea className="w-full border p-2 rounded h-24" value={editingMovie?.sinopsis || ''} onChange={e => setEditingMovie({...editingMovie, sinopsis: e.target.value})} />
+                  <label className="block text-sm font-medium mb-1">Sinopsis</label>
+                  <textarea className="w-full border p-2 rounded h-24" value={editingMovie?.sinopsis || ''} onChange={e => setEditingMovie({ ...editingMovie, sinopsis: e.target.value })} />
                 </div>
                 <div className="flex justify-end gap-3 mt-6">
                   <button type="button" onClick={() => setIsMovieOpen(false)} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded">Cancelar</button>
-                  <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Guardar</button>
+                  <button type="submit" disabled={loading} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2">
+                    {loading && <Loader2 className="animate-spin" size={16} />}
+                    Guardar
+                  </button>
                 </div>
               </form>
             </div>
@@ -193,22 +234,25 @@ export default function Catalog() {
           <div className="bg-white rounded-lg shadow-xl w-full max-w-sm p-6">
             <h2 className="text-xl font-bold mb-4">Añadir Copia</h2>
             <form onSubmit={handleAddCopy} className="space-y-4">
-               <div>
-                  <label className="block text-sm font-medium mb-1">Código de Barras</label>
-                  <input autoFocus required className="w-full border p-2 rounded" value={newCopy.codigo_barras || ''} onChange={e => setNewCopy({...newCopy, codigo_barras: e.target.value})} />
-               </div>
-               <div>
-                  <label className="block text-sm font-medium mb-1">Formato</label>
-                  <select className="w-full border p-2 rounded" value={newCopy.formato} onChange={e => setNewCopy({...newCopy, formato: e.target.value as any})}>
-                    <option value="DVD">DVD</option>
-                    <option value="Blu-ray">Blu-ray</option>
-                    <option value="4K">4K</option>
-                  </select>
-               </div>
-               <div className="flex justify-end gap-3 mt-4">
-                  <button type="button" onClick={() => setIsCopyOpen(false)} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded">Cancelar</button>
-                  <button type="submit" className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">Añadir</button>
-                </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Código de Barras</label>
+                <input autoFocus required className="w-full border p-2 rounded" value={newCopy.codigo_barras || ''} onChange={e => setNewCopy({ ...newCopy, codigo_barras: e.target.value })} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Formato</label>
+                <select className="w-full border p-2 rounded" value={newCopy.formato} onChange={e => setNewCopy({ ...newCopy, formato: e.target.value as any })}>
+                  <option value="DVD">DVD</option>
+                  <option value="Blu-ray">Blu-ray</option>
+                  <option value="4K">4K</option>
+                </select>
+              </div>
+              <div className="flex justify-end gap-3 mt-4">
+                <button type="button" onClick={() => setIsCopyOpen(false)} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded">Cancelar</button>
+                <button type="submit" disabled={loading} className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 flex items-center gap-2">
+                  {loading && <Loader2 className="animate-spin" size={16} />}
+                  Añadir
+                </button>
+              </div>
             </form>
           </div>
         </div>
