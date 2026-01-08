@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { db } from '../services/db';
+import { supabase } from '../services/supabase';
 import { Member } from '../types';
 import {
   Plus, Search, UserCheck, UserX, AlertCircle, Loader2,
@@ -34,10 +35,28 @@ export default function Members() {
 
   useEffect(() => {
     refreshData();
+
+    // Set up real-time subscription
+    const channel = supabase
+      .channel('members-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'members' },
+        (payload) => {
+          console.log('Realtime update received:', payload);
+          refreshData(); // Refresh everything when any change occurs
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const refreshData = async () => {
-    setLoading(true);
+    // We don't want the full loader on every background sync to avoid flicker
+    // except for the first load
     try {
       const allMembers = await db.members.getAll();
       setMembers(allMembers);
@@ -142,6 +161,7 @@ export default function Members() {
           fecha_alta: new Date().toISOString()
         } as Omit<Member, 'id'>);
       }
+      // refreshData will be triggered by realtime, but we call it here too for instant feedback
       await refreshData();
       setIsModalOpen(false);
       setEditingMember({ activo: true });
@@ -163,6 +183,7 @@ export default function Members() {
         return;
       }
       await db.members.delete(id);
+      // refreshData will be triggered by realtime
       await refreshData();
     } catch (e) {
       console.error('Error deleting member:', e);
@@ -174,7 +195,11 @@ export default function Members() {
 
   const exportPDF = () => {
     const doc = new jsPDF();
-    doc.text('Listado de Socios - VideoClub Manager', 14, 15);
+    doc.setFontSize(18);
+    doc.text('Listado de Socios - VideoClub Manager', 14, 20);
+    doc.setFontSize(10);
+    doc.setTextColor(100);
+    doc.text(`Generado el ${formatDate(new Date().toISOString())}`, 14, 28);
 
     const tableData = filteredAndSorted.map(m => [
       m.numero_socio,
@@ -189,7 +214,9 @@ export default function Members() {
     autoTable(doc, {
       head: [['ID', 'Nombre', 'Email', 'DNI', 'Estado', 'Alq.', 'Multas']],
       body: tableData,
-      startY: 20,
+      startY: 35,
+      theme: 'striped',
+      headStyles: { fillGray: 50, fontStyle: 'bold' },
     });
 
     doc.save(`socios_${new Date().toISOString().split('T')[0]}.pdf`);
@@ -204,18 +231,21 @@ export default function Members() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold text-slate-900">Gestión de Socios</h1>
-        <div className="flex gap-2">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h1 className="text-3xl font-black text-slate-900 tracking-tight">Gestión de Socios</h1>
+          <p className="text-slate-500 text-sm">Control centralizado y sincronizado en tiempo real</p>
+        </div>
+        <div className="flex gap-2 w-full sm:w-auto">
           <button
             onClick={exportPDF}
-            className="bg-slate-800 text-white px-4 py-2 rounded flex items-center gap-2 hover:bg-slate-700 transition"
+            className="flex-1 sm:flex-none justify-center bg-white border border-slate-200 text-slate-700 px-5 py-2.5 rounded-xl flex items-center gap-2 hover:bg-slate-50 transition font-bold text-sm shadow-sm"
           >
-            <FileText size={18} /> Exportar PDF
+            <FileText size={18} /> PDF
           </button>
           <button
             onClick={() => { setEditingMember({ activo: true }); setIsModalOpen(true); }}
-            className="bg-blue-600 text-white px-4 py-2 rounded flex items-center gap-2 hover:bg-blue-700 transition shadow-md shadow-blue-200"
+            className="flex-1 sm:flex-none justify-center bg-blue-600 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 hover:bg-blue-700 transition shadow-lg shadow-blue-200 font-bold text-sm"
             disabled={loading}
           >
             <Plus size={18} /> Nuevo Socio
@@ -223,38 +253,40 @@ export default function Members() {
         </div>
       </div>
 
-      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="relative mb-4">
-          <Search className="absolute left-3 top-2.5 text-slate-400" size={20} />
-          <input
-            type="text"
-            placeholder="Buscar por nombre, DNI, email o nº socio..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition"
-          />
+      <div className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-200 overflow-hidden">
+        <div className="p-6 border-b border-slate-100 bg-slate-50/50">
+          <div className="relative">
+            <Search className="absolute left-4 top-3.5 text-slate-400" size={20} />
+            <input
+              type="text"
+              placeholder="Filtro maestro: Nombre, DNI, Email o nº socio..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full pl-12 pr-4 p-3.5 bg-white border border-slate-200 rounded-2xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all shadow-sm font-medium"
+            />
+          </div>
         </div>
 
-        <div className="overflow-x-auto min-h-[400px]">
+        <div className="overflow-x-auto min-h-[450px]">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200">
-                <th className="p-4 cursor-pointer hover:bg-slate-100 transition" onClick={() => handleSort('numero_socio')}>
-                  <div className="flex items-center gap-1 text-[10px] uppercase text-slate-500 font-black tracking-wider">Nº <SortIcon column="numero_socio" /></div>
+              <tr className="bg-white border-b border-slate-200">
+                <th className="p-4 cursor-pointer hover:bg-slate-50 transition group" onClick={() => handleSort('numero_socio')}>
+                  <div className="flex items-center gap-1.5 text-[10px] uppercase text-slate-400 font-black tracking-widest group-hover:text-blue-600">ID <SortIcon column="numero_socio" /></div>
                 </th>
-                <th className="p-4 cursor-pointer hover:bg-slate-100 transition" onClick={() => handleSort('nombre')}>
-                  <div className="flex items-center gap-1 text-[10px] uppercase text-slate-500 font-black tracking-wider">Nombre <SortIcon column="nombre" /></div>
+                <th className="p-4 cursor-pointer hover:bg-slate-50 transition group" onClick={() => handleSort('nombre')}>
+                  <div className="flex items-center gap-1.5 text-[10px] uppercase text-slate-400 font-black tracking-widest group-hover:text-blue-600">Identidad <SortIcon column="nombre" /></div>
                 </th>
-                <th className="p-4 cursor-pointer hover:bg-slate-100 transition hidden lg:table-cell" onClick={() => handleSort('email')}>
-                  <div className="flex items-center gap-1 text-[10px] uppercase text-slate-500 font-black tracking-wider">Email <SortIcon column="email" /></div>
+                <th className="p-4 cursor-pointer hover:bg-slate-50 transition group hidden lg:table-cell" onClick={() => handleSort('email')}>
+                  <div className="flex items-center gap-1.5 text-[10px] uppercase text-slate-400 font-black tracking-widest group-hover:text-blue-600">Contacto <SortIcon column="email" /></div>
                 </th>
-                <th className="p-4 cursor-pointer hover:bg-slate-100 transition hidden md:table-cell" onClick={() => handleSort('dni')}>
-                  <div className="flex items-center gap-1 text-[10px] uppercase text-slate-500 font-black tracking-wider">DNI <SortIcon column="dni" /></div>
+                <th className="p-4 cursor-pointer hover:bg-slate-50 transition group hidden md:table-cell" onClick={() => handleSort('dni')}>
+                  <div className="flex items-center gap-1.5 text-[10px] uppercase text-slate-400 font-black tracking-widest group-hover:text-blue-600">DNI <SortIcon column="dni" /></div>
                 </th>
-                <th className="p-4 cursor-pointer hover:bg-slate-100 transition" onClick={() => handleSort('activo')}>
-                  <div className="flex items-center gap-1 text-[10px] uppercase text-slate-500 font-black tracking-wider">Estado <SortIcon column="activo" /></div>
+                <th className="p-4 cursor-pointer hover:bg-slate-50 transition group" onClick={() => handleSort('activo')}>
+                  <div className="flex items-center gap-1.5 text-[10px] uppercase text-slate-400 font-black tracking-widest group-hover:text-blue-600">Estado <SortIcon column="activo" /></div>
                 </th>
-                <th className="p-4 text-center">Acciones</th>
+                <th className="p-4 text-center text-[10px] uppercase text-slate-400 font-black tracking-widest">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -262,40 +294,42 @@ export default function Members() {
                 const fines = pendingFinesMap[member.id] || 0;
                 const actives = activeRentalsMap[member.id] || 0;
                 return (
-                  <tr key={member.id} className="hover:bg-slate-50 transition-colors group">
-                    <td className="p-4 font-mono text-xs text-slate-500">{member.numero_socio}</td>
+                  <tr key={member.id} className="hover:bg-blue-50/30 transition-colors group">
+                    <td className="p-4 font-mono text-xs text-slate-400 font-bold">{member.numero_socio}</td>
                     <td className="p-4">
                       <div className="flex flex-col">
-                        <span className="font-bold text-slate-900">{member.nombre} {member.apellidos}</span>
-                        <span className="text-[10px] text-slate-400 font-mono md:hidden">{member.dni}</span>
+                        <span className="font-bold text-slate-900 group-hover:text-blue-700 transition-colors">{member.nombre} {member.apellidos}</span>
+                        <span className="text-[10px] text-slate-400 font-mono md:hidden font-bold">{member.dni}</span>
                       </div>
                     </td>
                     <td className="p-4 hidden lg:table-cell">
-                      <div className="flex items-center gap-2 text-slate-600">
-                        <Mail size={12} className="shrink-0 text-slate-400" />
-                        <span className="text-sm truncate max-w-[180px]">{member.email || '-'}</span>
+                      <div className="flex items-center gap-2.5 text-slate-500">
+                        <div className="w-7 h-7 bg-slate-100 rounded-full flex items-center justify-center group-hover:bg-blue-100 group-hover:text-blue-600 transition-colors">
+                          <Mail size={12} className="shrink-0" />
+                        </div>
+                        <span className="text-sm font-medium truncate max-w-[180px]">{member.email || '-'}</span>
                       </div>
                     </td>
-                    <td className="p-4 hidden md:table-cell text-slate-600 font-mono text-xs">{member.dni}</td>
+                    <td className="p-4 hidden md:table-cell text-slate-500 font-mono text-xs font-bold">{member.dni}</td>
                     <td className="p-4">
                       {member.activo
-                        ? <span className="text-green-700 text-[9px] font-black uppercase bg-green-100 px-2 py-1 rounded-md flex w-fit items-center gap-1">ACTIVO</span>
-                        : <span className="text-slate-500 text-[9px] font-black uppercase bg-slate-100 px-2 py-1 rounded-md flex w-fit items-center gap-1">INACTIVO</span>
+                        ? <span className="text-green-700 text-[9px] font-black uppercase bg-green-100 px-2.5 py-1.5 rounded-lg flex w-fit items-center gap-1.5 border border-green-200">ACTIVO</span>
+                        : <span className="text-slate-500 text-[9px] font-black uppercase bg-slate-100 px-2.5 py-1.5 rounded-lg flex w-fit items-center gap-1.5 border border-slate-200">BLOQUEADO</span>
                       }
                     </td>
                     <td className="p-4">
-                      <div className="flex items-center justify-center gap-1">
+                      <div className="flex items-center justify-center gap-2">
                         <button
                           onClick={() => { setEditingMember(member); setIsModalOpen(true); }}
-                          className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition"
-                          title="Editar"
+                          className="p-2.5 text-slate-400 hover:text-blue-600 hover:bg-white rounded-xl transition shadow-sm hover:shadow active:scale-95"
+                          title="Editar Ficha"
                         >
                           <Edit2 size={16} />
                         </button>
                         <button
                           onClick={() => handleDelete(member.id, `${member.nombre} ${member.apellidos}`)}
-                          className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition"
-                          title="Eliminar"
+                          className="p-2.5 text-slate-400 hover:text-red-600 hover:bg-white rounded-xl transition shadow-sm hover:shadow active:scale-95"
+                          title="Eliminar Socio"
                         >
                           <Trash2 size={16} />
                         </button>
@@ -307,36 +341,49 @@ export default function Members() {
             </tbody>
           </table>
 
-          {loading && <div className="p-12 text-center"><Loader2 className="animate-spin inline text-blue-600" size={32} /></div>}
+          {loading && (
+            <div className="p-24 flex flex-col items-center justify-center gap-4">
+              <div className="relative">
+                <div className="w-16 h-16 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin"></div>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <UserCheck size={20} className="text-blue-600" />
+                </div>
+              </div>
+              <p className="text-slate-400 font-black uppercase tracking-widest text-[10px]">Sincronizando con Supabase...</p>
+            </div>
+          )}
 
           {!loading && filteredAndSorted.length === 0 && (
-            <div className="p-12 text-center text-slate-400 italic">
-              No se han encontrado resultados para tu búsqueda.
+            <div className="p-24 text-center flex flex-col items-center gap-3">
+              <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center text-slate-200">
+                <Search size={32} />
+              </div>
+              <p className="text-slate-400 font-bold italic">No se han encontrado registros para esta búsqueda.</p>
             </div>
           )}
         </div>
 
-        {/* Improved Pagination Controls */}
+        {/* Pagination */}
         {!loading && totalPages > 1 && (
-          <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4 px-4">
-            <div className="text-xs text-slate-500">
-              Mostrando <span className="font-bold">{(currentPage - 1) * itemsPerPage + 1}</span> a <span className="font-bold">{Math.min(currentPage * itemsPerPage, filteredAndSorted.length)}</span> de <span className="font-bold">{filteredAndSorted.length}</span> socios
+          <div className="p-6 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-50/30">
+            <div className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+              Página <span className="text-blue-600">{currentPage}</span> de <span className="text-slate-900">{totalPages}</span> — <span className="text-slate-900">{filteredAndSorted.length}</span> resultados totales
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               <button
                 onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
                 disabled={currentPage === 1}
-                className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50 disabled:opacity-30 transition"
+                className="p-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-30 transition shadow-sm"
               >
                 <ChevronLeft size={18} />
               </button>
 
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5 hidden md:flex">
                 {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
                   <button
                     key={p}
                     onClick={() => setCurrentPage(p)}
-                    className={`w-8 h-8 text-xs font-bold rounded-lg transition ${currentPage === p ? 'bg-blue-600 text-white' : 'hover:bg-slate-100 text-slate-600'}`}
+                    className={`w-10 h-10 text-xs font-black rounded-xl transition ${currentPage === p ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' : 'bg-white border border-slate-100 hover:border-blue-200 text-slate-600 shadow-sm'}`}
                   >
                     {p}
                   </button>
@@ -346,7 +393,7 @@ export default function Members() {
               <button
                 onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
                 disabled={currentPage === totalPages}
-                className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50 disabled:opacity-30 transition"
+                className="p-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-30 transition shadow-sm"
               >
                 <ChevronRight size={18} />
               </button>
@@ -355,58 +402,58 @@ export default function Members() {
         )}
       </div>
 
-      {/* Modal remains same but with improved styles */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4 backdrop-blur-md">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in duration-300">
-            <div className="bg-slate-900 p-6 text-white flex justify-between items-center">
-              <div className="flex flex-col">
-                <h2 className="text-xl font-black tracking-tight">{editingMember.id ? 'Editar Socio' : 'Nuevo Registro'}</h2>
-                <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mt-0.5">Módulo de Gestión de Membresía</p>
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in duration-300 border border-white/20">
+            <div className="bg-slate-900 p-8 text-white flex justify-between items-center relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-blue-600/20 rounded-full blur-3xl -mr-16 -mt-16"></div>
+              <div className="flex flex-col relative z-10">
+                <h2 className="text-2xl font-black tracking-tight uppercase italic">{editingMember.id ? 'Modificar Ficha' : 'Nuevo Socio'}</h2>
+                <p className="text-[10px] text-blue-400 uppercase font-black tracking-widest mt-1">Sincronización Cloud Activada</p>
               </div>
-              <button onClick={() => setIsModalOpen(false)} className="hover:bg-white/10 p-2 rounded-full transition"><X size={20} /></button>
+              <button onClick={() => setIsModalOpen(false)} className="hover:bg-white/10 p-2.5 rounded-full transition relative z-10"><X size={20} /></button>
             </div>
-            <form onSubmit={handleSave} className="p-8 space-y-6">
+            <form onSubmit={handleSave} className="p-8 space-y-6 bg-white">
               <div className="grid grid-cols-2 gap-6">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Nombre</label>
-                  <input required className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition" value={editingMember.nombre || ''} onChange={e => setEditingMember({ ...editingMember, nombre: e.target.value })} />
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Nombre de Pila</label>
+                  <input required className="w-full bg-slate-50 border border-slate-100 p-4 rounded-2xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all font-bold" value={editingMember.nombre || ''} onChange={e => setEditingMember({ ...editingMember, nombre: e.target.value })} />
                 </div>
-                <div className="space-y-1.5">
+                <div className="space-y-2">
                   <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Apellidos</label>
-                  <input required className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition" value={editingMember.apellidos || ''} onChange={e => setEditingMember({ ...editingMember, apellidos: e.target.value })} />
+                  <input required className="w-full bg-slate-50 border border-slate-100 p-4 rounded-2xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all font-bold" value={editingMember.apellidos || ''} onChange={e => setEditingMember({ ...editingMember, apellidos: e.target.value })} />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-6">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">DNI</label>
-                  <input required className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl font-mono focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition uppercase" value={editingMember.dni || ''} onChange={e => setEditingMember({ ...editingMember, dni: e.target.value.toUpperCase() })} />
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Documento (DNI)</label>
+                  <input required className="w-full bg-slate-50 border border-slate-100 p-4 rounded-2xl font-mono focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all uppercase font-bold" value={editingMember.dni || ''} onChange={e => setEditingMember({ ...editingMember, dni: e.target.value.toUpperCase() })} />
                 </div>
-                <div className="space-y-1.5">
+                <div className="space-y-2">
                   <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Teléfono</label>
-                  <input className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition" value={editingMember.telefono || ''} onChange={e => setEditingMember({ ...editingMember, telefono: e.target.value })} />
+                  <input className="w-full bg-slate-50 border border-slate-100 p-4 rounded-2xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all font-bold" value={editingMember.telefono || ''} onChange={e => setEditingMember({ ...editingMember, telefono: e.target.value })} />
                 </div>
               </div>
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Email de Contacto</label>
-                <input type="email" className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition" value={editingMember.email || ''} onChange={e => setEditingMember({ ...editingMember, email: e.target.value })} />
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Correo Electrónico</label>
+                <input type="email" className="w-full bg-slate-50 border border-slate-100 p-4 rounded-2xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all font-bold" value={editingMember.email || ''} onChange={e => setEditingMember({ ...editingMember, email: e.target.value })} />
               </div>
 
               {editingMember.id && (
-                <div className="flex items-center gap-3 p-4 bg-blue-50 rounded-2xl border border-blue-100">
-                  <input type="checkbox" id="active" className="w-5 h-5 accent-blue-600 rounded-md" checked={editingMember.activo} onChange={e => setEditingMember({ ...editingMember, activo: e.target.checked })} />
+                <div className="flex items-center gap-4 p-5 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl border border-blue-100 shadow-inner">
+                  <input type="checkbox" id="active" className="w-6 h-6 accent-blue-600 rounded-md cursor-pointer" checked={editingMember.activo} onChange={e => setEditingMember({ ...editingMember, activo: e.target.checked })} />
                   <div className="flex flex-col">
-                    <label htmlFor="active" className="text-sm font-black text-blue-900 cursor-pointer">Socio Activo</label>
-                    <p className="text-[10px] text-blue-600 font-bold uppercase tracking-tight">El socio puede realizar nuevos alquileres</p>
+                    <label htmlFor="active" className="text-sm font-black text-blue-900 cursor-pointer">Socio con Acceso Activo</label>
+                    <p className="text-[10px] text-blue-600 font-bold uppercase tracking-tight opacity-75">Habilitar alquileres y gestiones en el sistema</p>
                   </div>
                 </div>
               )}
 
-              <div className="flex justify-end gap-3 mt-10">
-                <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-3 text-slate-500 font-black uppercase tracking-widest text-[10px] hover:bg-slate-100 rounded-xl transition">He terminado</button>
-                <button type="submit" disabled={loading} className="px-8 py-3 bg-blue-600 text-white font-black uppercase tracking-widest text-[10px] rounded-xl hover:bg-blue-700 transition flex items-center gap-2 shadow-xl shadow-blue-200 disabled:opacity-50">
+              <div className="flex flex-col sm:flex-row justify-end gap-3 mt-10">
+                <button type="button" onClick={() => setIsModalOpen(false)} className="order-2 sm:order-1 px-8 py-4 text-slate-400 font-black uppercase tracking-widest text-[10px] hover:text-slate-600 transition">Cancelar Operación</button>
+                <button type="submit" disabled={loading} className="order-1 sm:order-2 px-10 py-4 bg-blue-600 text-white font-black uppercase tracking-widest text-[10px] rounded-2xl hover:bg-blue-700 transition-all flex items-center justify-center gap-2 shadow-2xl shadow-blue-500/40 active:scale-95 disabled:opacity-50">
                   {loading && <Loader2 className="animate-spin" size={14} />}
-                  {editingMember.id ? 'Actualizar Ficha' : 'Dar de Alta'}
+                  {editingMember.id ? 'Confirmar Cambios' : 'Registrar Socio'}
                 </button>
               </div>
             </form>
